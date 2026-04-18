@@ -1,0 +1,470 @@
+#!/usr/bin/env bash
+# deadman — a dead man's switch for macOS
+# https://github.com/<your-username>/deadman
+set -euo pipefail
+
+VERSION="0.1.0"
+PLIST_LABEL="com.deadman.check"
+
+: "${XDG_CONFIG_HOME:=$HOME/.config}"
+: "${XDG_STATE_HOME:=$HOME/.local/state}"
+
+CONFIG_DIR="$XDG_CONFIG_HOME/deadman"
+STATE_DIR="$XDG_STATE_HOME/deadman"
+CONFIG_FILE="$CONFIG_DIR/config"
+STATE_FILE="$STATE_DIR/state"
+PLIST_FILE="$HOME/Library/LaunchAgents/$PLIST_LABEL.plist"
+LOG_OUT="$STATE_DIR/launchd.out.log"
+LOG_ERR="$STATE_DIR/launchd.err.log"
+RUN_LOG="$STATE_DIR/deadman.log"
+
+# ---------------- helpers ----------------
+
+die() { echo "deadman: $*" >&2; exit 1; }
+
+log() {
+  ensure_dirs
+  printf '[%s] %s\n' "$(date '+%Y-%m-%dT%H:%M:%S%z')" "$*" >> "$RUN_LOG"
+}
+
+ensure_dirs() {
+  mkdir -p "$CONFIG_DIR" "$STATE_DIR"
+}
+
+# Resolve absolute path of this script, following symlinks.
+script_path() {
+  local src="${BASH_SOURCE[0]}"
+  while [[ -L "$src" ]]; do
+    local dir
+    dir="$(cd -P "$(dirname "$src")" && pwd)"
+    src="$(readlink "$src")"
+    [[ "$src" != /* ]] && src="$dir/$src"
+  done
+  echo "$(cd -P "$(dirname "$src")" && pwd)/$(basename "$src")"
+}
+
+# Parse "24h" / "30m" / "60s" / "7d" / "3600" into seconds.
+parse_duration() {
+  local dur="$1" n suffix
+  if [[ "$dur" =~ ^([0-9]+)([smhd])?$ ]]; then
+    n="${BASH_REMATCH[1]}"
+    suffix="${BASH_REMATCH[2]}"
+    case "$suffix" in
+      d)   echo $(( n * 86400 )) ;;
+      h)   echo $(( n * 3600 )) ;;
+      m)   echo $(( n * 60 )) ;;
+      s|"") echo "$n" ;;
+    esac
+  else
+    return 1
+  fi
+}
+
+# Format seconds into e.g. "1d2h3m4s".
+format_duration() {
+  local sec="$1" neg=""
+  if (( sec < 0 )); then neg="-"; sec=$(( -sec )); fi
+  local d=$(( sec / 86400 ))
+  local h=$(( (sec % 86400) / 3600 ))
+  local m=$(( (sec % 3600) / 60 ))
+  local s=$(( sec % 60 ))
+  local out=""
+  (( d > 0 )) && out+="${d}d"
+  (( h > 0 )) && out+="${h}h"
+  (( m > 0 )) && out+="${m}m"
+  if (( s > 0 )) || [[ -z "$out" ]]; then out+="${s}s"; fi
+  echo "${neg}${out}"
+}
+
+# ---------------- config / state ----------------
+
+load_config() {
+  TIMEOUT="24h"
+  TRIGGER_SCRIPT=""
+  if [[ -f "$CONFIG_FILE" ]]; then
+    # shellcheck source=/dev/null
+    . "$CONFIG_FILE"
+  fi
+}
+
+save_config() {
+  ensure_dirs
+  cat > "$CONFIG_FILE" <<EOF
+# deadman config — edit via 'deadman config set' or directly.
+TIMEOUT="$TIMEOUT"
+TRIGGER_SCRIPT="$TRIGGER_SCRIPT"
+EOF
+}
+
+load_state() {
+  LAST_PING=0
+  FIRED=0
+  FIRED_AT=0
+  if [[ -f "$STATE_FILE" ]]; then
+    # shellcheck source=/dev/null
+    . "$STATE_FILE"
+  fi
+}
+
+save_state() {
+  ensure_dirs
+  cat > "$STATE_FILE" <<EOF
+LAST_PING=$LAST_PING
+FIRED=$FIRED
+FIRED_AT=$FIRED_AT
+EOF
+}
+
+fmt_ts() {
+  local ts="$1"
+  if (( ts == 0 )); then
+    echo "never"
+  else
+    date -r "$ts" '+%Y-%m-%d %H:%M:%S %z'
+  fi
+}
+
+# ---------------- commands ----------------
+
+cmd_ping() {
+  ensure_dirs
+  load_state
+  LAST_PING=$(date +%s)
+  FIRED=0
+  FIRED_AT=0
+  save_state
+  log "ping recorded"
+  echo "ping recorded at $(fmt_ts "$LAST_PING")"
+}
+
+cmd_status() {
+  load_config
+  load_state
+  local timeout_sec
+  timeout_sec=$(parse_duration "$TIMEOUT") || die "invalid timeout in config: $TIMEOUT"
+  local now elapsed remaining
+  now=$(date +%s)
+  if (( LAST_PING == 0 )); then
+    elapsed=0; remaining=$timeout_sec
+  else
+    elapsed=$(( now - LAST_PING ))
+    remaining=$(( timeout_sec - elapsed ))
+  fi
+
+  echo "last ping:       $(fmt_ts "$LAST_PING")"
+  echo "timeout:         $TIMEOUT ($(format_duration "$timeout_sec"))"
+  echo "elapsed:         $(format_duration "$elapsed")"
+  if (( LAST_PING == 0 )); then
+    echo "remaining:       n/a (waiting for first ping)"
+    echo "status:          INACTIVE"
+  elif (( remaining > 0 )); then
+    echo "remaining:       $(format_duration "$remaining")"
+    echo "status:          ACTIVE"
+  else
+    echo "remaining:       0s (expired $(format_duration $(( -remaining ))) ago)"
+    if (( FIRED == 1 )); then
+      echo "status:          FIRED at $(fmt_ts "$FIRED_AT")"
+    else
+      echo "status:          EXPIRED (awaiting next check)"
+    fi
+  fi
+  echo "trigger script:  ${TRIGGER_SCRIPT:-<none>}"
+  echo
+  echo "config file:     $CONFIG_FILE"
+  echo "state file:      $STATE_FILE"
+  if [[ -f "$PLIST_FILE" ]]; then
+    echo "launchd plist:   $PLIST_FILE (installed)"
+  else
+    echo "launchd plist:   not installed — run 'deadman install'"
+  fi
+}
+
+cmd_check() {
+  load_config
+  load_state
+
+  if (( FIRED == 1 )); then
+    exit 0
+  fi
+  if (( LAST_PING == 0 )); then
+    exit 0
+  fi
+
+  local timeout_sec now elapsed
+  timeout_sec=$(parse_duration "$TIMEOUT") || { log "check: invalid timeout '$TIMEOUT'"; exit 1; }
+  now=$(date +%s)
+  elapsed=$(( now - LAST_PING ))
+
+  if (( elapsed < timeout_sec )); then
+    exit 0
+  fi
+
+  log "check: timeout exceeded (elapsed=${elapsed}s, timeout=${timeout_sec}s) — firing trigger"
+
+  # Mark fired BEFORE running the trigger so a concurrent ping cannot unfire
+  # the execution that is about to happen.
+  FIRED=1
+  FIRED_AT=$now
+  save_state
+
+  if [[ -z "$TRIGGER_SCRIPT" ]]; then
+    log "check: no trigger script configured; state marked fired"
+    exit 0
+  fi
+
+  log "check: executing trigger: $TRIGGER_SCRIPT"
+  if DEADMAN_LAST_PING="$LAST_PING" \
+     DEADMAN_TIMEOUT="$timeout_sec" \
+     DEADMAN_ELAPSED="$elapsed" \
+     DEADMAN_FIRED_AT="$FIRED_AT" \
+     /bin/sh -c "$TRIGGER_SCRIPT" >>"$RUN_LOG" 2>&1; then
+    log "check: trigger succeeded"
+  else
+    log "check: trigger failed with exit $?"
+  fi
+}
+
+cmd_reset() {
+  ensure_dirs
+  load_config
+  LAST_PING=$(date +%s)
+  FIRED=0
+  FIRED_AT=0
+  save_state
+  log "state reset"
+  local timeout_sec
+  timeout_sec=$(parse_duration "$TIMEOUT") || die "invalid timeout: $TIMEOUT"
+  echo "state reset; next deadline in $(format_duration "$timeout_sec")"
+}
+
+cmd_test() {
+  load_config
+  [[ -n "$TRIGGER_SCRIPT" ]] || die "no trigger script configured; set with 'deadman config set trigger_script <path>'"
+  echo "running trigger script: $TRIGGER_SCRIPT"
+  DEADMAN_LAST_PING="$(date +%s)" \
+  DEADMAN_TIMEOUT="0" \
+  DEADMAN_ELAPSED="0" \
+  DEADMAN_FIRED_AT="$(date +%s)" \
+  DEADMAN_TEST="1" \
+  /bin/sh -c "$TRIGGER_SCRIPT"
+}
+
+cmd_config() {
+  if (( $# == 0 )); then
+    ensure_dirs
+    if [[ ! -f "$CONFIG_FILE" ]]; then
+      load_config
+      save_config
+    fi
+    cat "$CONFIG_FILE"
+    echo
+    echo "(config file: $CONFIG_FILE)"
+    return
+  fi
+
+  case "$1" in
+    set)
+      shift
+      (( $# == 2 )) || die "usage: deadman config set <key> <value>"
+      local key="$1" value="$2"
+      load_config
+      case "$key" in
+        timeout|TIMEOUT)
+          parse_duration "$value" > /dev/null || die "invalid duration: $value (use 24h, 30m, 60s, 7d)"
+          TIMEOUT="$value"
+          ;;
+        trigger_script|TRIGGER_SCRIPT|script)
+          TRIGGER_SCRIPT="$value"
+          ;;
+        *)
+          die "unknown config key: $key (valid: timeout, trigger_script)"
+          ;;
+      esac
+      save_config
+      echo "$key = $value"
+      ;;
+    edit)
+      ensure_dirs
+      load_config
+      [[ -f "$CONFIG_FILE" ]] || save_config
+      "${EDITOR:-vi}" "$CONFIG_FILE"
+      ;;
+    path)
+      echo "$CONFIG_FILE"
+      ;;
+    *)
+      die "unknown config subcommand: $1 (valid: set, edit, path)"
+      ;;
+  esac
+}
+
+cmd_install() {
+  local interval=60
+  local timeout_val=""
+  local script_val=""
+  while (( $# > 0 )); do
+    case "$1" in
+      --interval) interval="$2"; shift 2 ;;
+      --timeout)  timeout_val="$2"; shift 2 ;;
+      --script)   script_val="$2"; shift 2 ;;
+      -h|--help)
+        cat <<EOF
+usage: deadman install [--interval SEC] [--timeout DUR] [--script PATH]
+
+Install the launchd agent that periodically runs 'deadman check'.
+  --interval SEC   how often launchd wakes and checks (default: 60)
+  --timeout DUR    deadman timeout, e.g. 24h, 7d, 30m
+  --script PATH    path to the trigger script
+EOF
+        return 0 ;;
+      *) die "unknown flag: $1" ;;
+    esac
+  done
+
+  [[ "$interval" =~ ^[0-9]+$ ]] || die "invalid --interval: $interval"
+
+  ensure_dirs
+  load_config
+  if [[ -n "$timeout_val" ]]; then
+    parse_duration "$timeout_val" > /dev/null || die "invalid --timeout: $timeout_val"
+    TIMEOUT="$timeout_val"
+  fi
+  if [[ -n "$script_val" ]]; then
+    TRIGGER_SCRIPT="$script_val"
+  fi
+  save_config
+
+  local exec_path
+  exec_path="$(command -v deadman 2>/dev/null || true)"
+  if [[ -z "$exec_path" ]]; then
+    exec_path="$(script_path)"
+    echo "note: 'deadman' is not in PATH; using $exec_path" >&2
+    echo "      consider running 'make install' so the agent keeps working if this dir moves." >&2
+  fi
+
+  mkdir -p "$(dirname "$PLIST_FILE")"
+  cat > "$PLIST_FILE" <<EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>$PLIST_LABEL</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>$exec_path</string>
+        <string>check</string>
+    </array>
+    <key>StartInterval</key>
+    <integer>$interval</integer>
+    <key>StandardOutPath</key>
+    <string>$LOG_OUT</string>
+    <key>StandardErrorPath</key>
+    <string>$LOG_ERR</string>
+    <key>RunAtLoad</key>
+    <true/>
+</dict>
+</plist>
+EOF
+
+  launchctl unload "$PLIST_FILE" 2>/dev/null || true
+  launchctl load "$PLIST_FILE" || die "failed to load launchd plist"
+
+  echo "installed plist:   $PLIST_FILE"
+  echo "deadman binary:    $exec_path"
+  echo "check interval:    ${interval}s"
+  echo "timeout:           $TIMEOUT"
+  echo "trigger script:    ${TRIGGER_SCRIPT:-<none — set with 'deadman config set trigger_script PATH'>}"
+  echo
+  if [[ -z "$TRIGGER_SCRIPT" ]]; then
+    echo "warning: no trigger script configured; deadman will mark fired but take no action." >&2
+  fi
+  echo "next: run 'deadman ping' to start the timer."
+}
+
+cmd_uninstall() {
+  if [[ -f "$PLIST_FILE" ]]; then
+    launchctl unload "$PLIST_FILE" 2>/dev/null || true
+    rm -f "$PLIST_FILE"
+    echo "removed: $PLIST_FILE"
+  else
+    echo "not installed"
+  fi
+}
+
+cmd_logs() {
+  local n="${1:-50}"
+  [[ "$n" =~ ^[0-9]+$ ]] || die "logs: expected a number, got '$n'"
+  local any=0
+  for f in "$RUN_LOG" "$LOG_ERR" "$LOG_OUT"; do
+    if [[ -s "$f" ]]; then
+      any=1
+      echo "=== $f (last $n lines) ==="
+      tail -n "$n" "$f"
+      echo
+    fi
+  done
+  if (( any == 0 )); then
+    echo "no log output yet"
+  fi
+}
+
+cmd_help() {
+  cat <<EOF
+deadman $VERSION — a dead man's switch for macOS
+
+USAGE:
+  deadman <command> [args]
+
+COMMANDS:
+  ping                      record a check-in (resets the timer)
+  status                    show current state
+  check                     internal: run by launchd to evaluate expiry
+  reset                     treat now as a ping and clear 'fired' state
+  test                      run the trigger script once without firing state
+  install [flags]           install launchd agent
+                              --interval <sec>   launchd check interval (default 60)
+                              --timeout <dur>    e.g. 24h, 7d, 30m, 60s
+                              --script <path>    trigger script path
+  uninstall                 remove launchd agent
+  config                    show current config
+  config set <key> <value>  set 'timeout' or 'trigger_script'
+  config edit               open the config file in \$EDITOR
+  config path               print the config file path
+  logs [n]                  tail n lines from all log files (default 50)
+  version                   print version
+  help                      show this message
+
+EXAMPLES:
+  deadman install --timeout 24h --script ~/bin/panic.sh
+  deadman ping
+  deadman status
+  deadman test             # dry-run the trigger script
+EOF
+}
+
+# ---------------- dispatch ----------------
+
+main() {
+  if (( $# == 0 )); then
+    cmd_help
+    exit 1
+  fi
+  local cmd="$1"; shift
+  case "$cmd" in
+    ping)       cmd_ping "$@" ;;
+    status)     cmd_status "$@" ;;
+    check)      cmd_check "$@" ;;
+    reset)      cmd_reset "$@" ;;
+    test)       cmd_test "$@" ;;
+    install)    cmd_install "$@" ;;
+    uninstall)  cmd_uninstall "$@" ;;
+    config)     cmd_config "$@" ;;
+    logs)       cmd_logs "$@" ;;
+    version|-v|--version) echo "deadman $VERSION" ;;
+    help|-h|--help)       cmd_help ;;
+    *)          die "unknown command: $cmd (try: deadman help)" ;;
+  esac
+}
+
+main "$@"
