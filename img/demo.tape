@@ -11,7 +11,7 @@ Set Padding 12
 Set TypingSpeed 45ms
 Set Theme "Builtin Dark"
 
-Type "./deadman -a myconf"
+Type "./deadman deadman.conf"
 Enter
 Sleep 18s
 Type "q"

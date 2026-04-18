@@ -7,7 +7,7 @@ The behaviour, config format, and screen layout mirror [upa/deadman](https://git
 
 ![demo](img/deadman-demo.gif)
 
-> Captured on macOS monitoring `192.168.1.1`〜`192.168.1.10`. Regenerate with `vhs img/demo.tape`.
+> Captured on macOS monitoring public anycast resolvers and root servers (`8.8.8.8`, `9.9.9.9`, `202.12.27.33` / M-root, `210.155.141.200` / KAME) plus their IPv6 counterparts. Regenerate with `vhs img/demo.tape`.
 
 Features
 --------
