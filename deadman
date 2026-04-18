@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # deadman — a dead man's switch for macOS
-# https://github.com/<your-username>/deadman
+# https://github.com/nnnnnnnnnke/deadman
 set -euo pipefail
 
 VERSION="0.1.0"
