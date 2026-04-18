@@ -1,5 +1,5 @@
-deadman
-=======
+deadman-macos
+=============
 
 A curses-like TUI multi-host liveness monitor for macOS, implemented in pure **Bash**. It reads a `name  address` config file, pings every target each second, and draws a live dashboard showing UP/DOWN, RTT, loss rate, and a recent-history bar.
 
@@ -97,8 +97,8 @@ Credits
 
 ---
 
-deadman (日本語版)
-==================
+deadman-macos (日本語版)
+========================
 
 macOS 向けの、**Bash 単体で実装された** curses 風 TUI 死活監視ツールです。`name  address` 形式のコンフィグを読み、各ターゲットを1秒おきに ping し、UP/DOWN・RTT・ロス率・履歴バーをリアルタイムに表示します。
 
