@@ -3,7 +3,9 @@ deadman
 
 A curses-based multi-host liveness monitor using ICMP ping, tuned for use on macOS. This repository is a redistribution of [upa/deadman](https://github.com/upa/deadman), which itself originates from "pingman" developed by the Interop Tokyo ShowNet NOC team. Both share the same [MIT License](LICENSE).
 
-![demo](https://github.com/upa/deadman/raw/master/img/deadman-demo.gif)
+![demo](img/deadman-demo.gif)
+
+> Captured on macOS monitoring `192.168.1.1`〜`192.168.1.10`. Regenerate with `vhs img/demo.tape`.
 
 Features
 --------
