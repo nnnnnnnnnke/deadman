@@ -198,6 +198,89 @@ command -v deadman >/dev/null && deadman ping >/dev/null 2>&1 || true
 
 ---
 
+## 応用: 監視対象(IP/ホスト)の自動死活監視
+
+「自分で `deadman ping` する代わりに、指定したIP/ホストが到達可能である限り自動でチェックインする」使い方です。対象が落ち続ければ deadman のタイムアウトに達し、トリガーが発火します。
+
+構成:
+
+```
+launchd (watcher, every 60s)          launchd (deadman check, every 60s)
+      ↓                                         ↓
+watcher スクリプト: ping TARGET              deadman check
+      ↓ (疎通OK)                                ↓ (タイムアウト超過)
+deadman ping (← タイマーリセット)            trigger スクリプト
+```
+
+### 1. watcher スクリプトを設置
+
+`examples/` 以下に雛形があります:
+
+- `examples/watcher-ping.sh.example` — ICMP ping ベース
+- `examples/watcher-http.sh.example` — HTTP ヘルスチェックベース
+
+```sh
+mkdir -p ~/bin
+cp examples/watcher-ping.sh.example ~/bin/deadman-watcher.sh
+chmod +x ~/bin/deadman-watcher.sh
+$EDITOR ~/bin/deadman-watcher.sh      # TARGETS を実際の監視対象に編集
+```
+
+`TARGETS` は配列として複数並べることができます。**どれか1つでも応答すれば ping 扱い**になります(=「すべて落ちたら発火」)。
+
+```sh
+TARGETS=(
+  "192.168.1.1"        # IPアドレス
+  "example.com"        # ホスト名
+  "10.0.0.5"
+)
+```
+
+手動で動作確認:
+
+```sh
+~/bin/deadman-watcher.sh
+# → "reachable: 192.168.1.1 — deadman pinged" のような出力
+deadman status       # last ping が更新されていればOK
+```
+
+### 2. watcher を launchd に登録
+
+`examples/com.deadman.watcher.plist.example` を使います:
+
+```sh
+sed "s/__USER__/$(whoami)/g" examples/com.deadman.watcher.plist.example \
+  > ~/Library/LaunchAgents/com.deadman.watcher.plist
+launchctl load ~/Library/LaunchAgents/com.deadman.watcher.plist
+```
+
+これで60秒おきに watcher が動き、疎通確認に成功するたび `deadman ping` が自動で叩かれます。
+
+### 3. deadman本体もセットアップ
+
+`deadman install` で本体側の launchd エージェントも登録しておきます。タイムアウトは「watcher 間隔 × 許容する連続失敗回数」より少し長めにしておくのが安全です。
+
+```sh
+# 例: watcher 60秒間隔で10回連続失敗したら発火
+deadman install --timeout 11m --script ~/bin/deadman-panic.sh
+```
+
+### 4. watcher のアンインストール
+
+```sh
+launchctl unload ~/Library/LaunchAgents/com.deadman.watcher.plist
+rm ~/Library/LaunchAgents/com.deadman.watcher.plist
+rm ~/bin/deadman-watcher.sh
+```
+
+### 注意点
+
+- **AND条件(全ターゲットが応答している必要がある)** が欲しい場合は、watcher スクリプト内のループを書き換えて、1つでも失敗すれば `exit 1` (=pingしない) にしてください。
+- **WiFiオフ/スリープ中** は到達不可とみなされます。経過時間は壁時計で積まれるので、長時間スリープ後に復帰するといきなり発火することがあります。タイムアウトは余裕を持って設定してください。
+- **launchd の PATH** は狭いため、watcher スクリプト内では `deadman` を絶対パスで呼ぶか、plist の `EnvironmentVariables` で PATH を通してください(雛形では通しています)。
+
+---
+
 ## アンインストール
 
 ```sh
