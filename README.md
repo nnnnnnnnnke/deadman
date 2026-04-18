@@ -32,8 +32,8 @@ Setup
 
 ```sh
 # 1. Clone
-git clone https://github.com/nnnnnnnnnke/deadman.git
-cd deadman
+git clone https://github.com/nnnnnnnnnke/deadman-macos.git
+cd deadman-macos
 
 # 2. Run directly
 ./deadman deadman.conf
@@ -140,8 +140,8 @@ ICMP ping で複数ホストの死活を curses 画面にリアルタイム表�
 
 ```sh
 # 1. 取得
-git clone https://github.com/nnnnnnnnnke/deadman.git
-cd deadman
+git clone https://github.com/nnnnnnnnnke/deadman-macos.git
+cd deadman-macos
 
 # 2. そのまま実行
 ./deadman deadman.conf
