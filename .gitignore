@@ -1,12 +1,2 @@
-# macOS
-.DS_Store
-
-# editor / IDE
-.vscode/
-.idea/
-*.swp
-*~
-
-# local runtime state (should never be committed)
-state
-*.log
+myconf
+test.conf
