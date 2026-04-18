@@ -1,7 +1,9 @@
 deadman
 =======
 
-A curses-based multi-host liveness monitor using ICMP ping, tuned for use on macOS. This repository is a redistribution of [upa/deadman](https://github.com/upa/deadman), which itself originates from "pingman" developed by the Interop Tokyo ShowNet NOC team. Both share the same [MIT License](LICENSE).
+A curses-like TUI multi-host liveness monitor for macOS, implemented in pure **Bash**. It reads a `name  address` config file, pings every target each second, and draws a live dashboard showing UP/DOWN, RTT, loss rate, and a recent-history bar.
+
+The behaviour, config format, and screen layout mirror [upa/deadman](https://github.com/upa/deadman), which itself originates from "pingman" developed by the Interop Tokyo ShowNet NOC team. This repository is an independent Bash reimplementation rather than a redistribution. Same [MIT License](LICENSE).
 
 ![demo](img/deadman-demo.gif)
 
@@ -10,24 +12,24 @@ A curses-based multi-host liveness monitor using ICMP ping, tuned for use on mac
 Features
 --------
 
-- Monitor many hosts concurrently and show UP/DOWN, RTT, loss rate, and a recent-history bar (▁▂▃▄▅▆▇█) in a curses TUI
-- Reload config on `SIGHUP` while preserving history
+- Pure Bash — runs on the stock `/bin/bash` (3.2) shipped with macOS, no Python or compiled dependencies
+- Parallel probes each cycle (always async)
+- Reloads config on `SIGHUP` while preserving per-target history
 - Visual grouping via `---` separators in the config
-- Synchronous or asynchronous probe mode (`-a` / `--async-mode`)
-- Ping through an ssh jump host (`relay=`)
-- SNMP ping (`via=snmp`, RFC 4560)
-- TCP ping via `hping3` (`tcp=dstport:N`)
-- Linux-only: network namespaces (`via=netns`), VRF (`via=vrf`)
+- IPv4 and IPv6 (via `ping6` or `ping -6`)
+- Color-coded UP/DOWN rows, Unicode RTT bar (▁▂▃▄▅▆▇█, `X` on timeout)
+- Optional per-target log output (`-l DIR`)
+- `q` to quit, `r` to reset counters at runtime
+
+Not supported in this Bash build (all are available upstream in upa/deadman): ssh-relay, SNMP ping, TCP ping via hping3, Linux netns / VRF, RouterOS API, source-interface binding, async-vs-sync switch, blink-arrow.
 
 Requirements (macOS)
 --------------------
 
-- Python 3 (the stock `/usr/bin/python3` works)
+- Bash (the default `/bin/bash` 3.2 is enough; Bash 5 from Homebrew also works)
 - `ping` (shipped with macOS)
-- Optional, only when using the corresponding feature:
-  - `ssh` (shipped with macOS)
-  - `snmpping` from Net-SNMP
-  - `hping3` (`brew install hping`)
+- `ping6` (shipped with macOS) — only needed for IPv6 targets
+- `awk`, `tput`, `mktemp`, `hostname` — all shipped with macOS
 
 Setup
 -----
@@ -49,23 +51,23 @@ Usage
 -----
 
 ```sh
-deadman [-h] [-s SCALE] [-a] [-b] [-l LOGDIR] configfile
+deadman [-s SCALE] [-a] [-b] [-l LOGDIR] [-h] configfile
 ```
 
 | Option | Description |
 | --- | --- |
 | `-s SCALE`, `--scale SCALE` | Milliseconds per step of the RTT bar graph (default: `10`) |
-| `-a`, `--async-mode` | Probe all targets in parallel |
-| `-b`, `--blink-arrow` | Blink the cursor arrow while in async mode |
-| `-l LOGDIR`, `--logging LOGDIR` | Write logs under this directory |
+| `-a`, `--async-mode` | Accepted for CLI compatibility with upa/deadman; probing is always async here |
+| `-b`, `--blink-arrow` | Accepted for CLI compatibility; no-op in this build |
+| `-l LOGDIR`, `--logging LOGDIR` | Append a line per probe to `LOGDIR/<name>.log` |
 | `-h`, `--help` | Show help |
 
-In the TUI use arrow keys to move the cursor and `q` to quit.
+In the TUI, press `q` to quit or `r` to reset all counters.
 
 Config file format
 ------------------
 
-One target per line. A full example is in `deadman.conf`.
+One target per line. A sample is provided in `deadman.conf`.
 
 ```
 # Comments start with '#'
@@ -78,24 +80,9 @@ mroot6          2001:dc3::35
 kame6           2001:2f0:0:8800::1:1
 ```
 
-Advanced transports:
+Extra fields per line (`relay=`, `via=snmp`, `tcp=...`, etc.) are parsed in upstream upa/deadman; they are silently ignored by this Bash build, which uses only the first two whitespace-separated fields.
 
-```
-# ssh relay (macOS/Linux)
-google-via-ssh  173.194.117.176 relay=X.X.X.X os=Linux user=USER key=~/.ssh/id_rsa
-
-# SNMPv2 ping (RFC 4560)
-gw-via-snmp     8.8.8.8 relay=X.X.X.X via=snmp community=public
-
-# TCP ping via hping3
-wide-tcp80      203.178.136.59 tcp=dstport:80
-
-# Linux only
-gw-via-netns    8.8.8.8 relay=netns1 via=netns
-gw-via-vrf      8.8.8.8 relay=vrf1 via=vrf
-```
-
-After editing the config, send `SIGHUP` to reload without losing history:
+Send `SIGHUP` to reload without losing history:
 
 ```sh
 kill -HUP $(pgrep -f 'deadman deadman.conf')
@@ -104,7 +91,7 @@ kill -HUP $(pgrep -f 'deadman deadman.conf')
 Credits
 -------
 
-- Upstream: [upa/deadman](https://github.com/upa/deadman) by upa@haeena.net
+- Upstream design and config format: [upa/deadman](https://github.com/upa/deadman) by upa@haeena.net
 - Original "pingman": Interop Tokyo ShowNet NOC team
 - License: MIT — see [LICENSE](LICENSE)
 
@@ -113,29 +100,31 @@ Credits
 deadman (日本語版)
 ==================
 
-ICMP ping で複数ホストの死活を curses 画面にリアルタイム表示するモニタです。macOS での利用を想定して [upa/deadman](https://github.com/upa/deadman) を再配布したリポジトリで、上流は Interop Tokyo ShowNet NOC team 発祥の "pingman" を起源としています。どちらも [MIT License](LICENSE)。
+macOS 向けの、**Bash 単体で実装された** curses 風 TUI 死活監視ツールです。`name  address` 形式のコンフィグを読み、各ターゲットを1秒おきに ping し、UP/DOWN・RTT・ロス率・履歴バーをリアルタイムに表示します。
+
+挙動・設定フォーマット・画面レイアウトは [upa/deadman](https://github.com/upa/deadman) (起源は Interop Tokyo ShowNet NOC team の "pingman") に倣っていますが、本リポジトリは Python ソースの再配布ではなく Bash による独立実装です。ライセンスは同じ [MIT License](LICENSE)。
 
 機能
 ----
 
-- 複数ホストを同時 ping し、UP/DOWN・RTT・ロス率・履歴バー (▁▂▃▄▅▆▇█) を TUI で表示
-- `SIGHUP` でコンフィグを再読込(履歴は保持)
+- 完全に Bash 製 — macOS 標準の `/bin/bash` (3.2) で動作、Python もコンパイルも不要
+- 毎サイクル全ターゲットに並列 ping
+- `SIGHUP` でコンフィグ再読込(履歴保持)
 - `---` でグルーピング用のセパレータを表示
-- 同期 / 非同期モード (`-a` / `--async-mode`)
-- ssh 踏み台経由 ping (`relay=`)
-- SNMP ping (`via=snmp`、RFC4560)
-- TCP ping (`tcp=dstport:N`、要 `hping3`)
-- Linux 専用: netns (`via=netns`)、VRF (`via=vrf`)
+- IPv4 / IPv6 対応 (`ping6` または `ping -6`)
+- UP/DOWN の色分け、Unicode RTT バー (▁▂▃▄▅▆▇█、タイムアウト時 `X`)
+- 任意で per-target ログ出力 (`-l DIR`)
+- `q` で終了、`r` でカウンタリセット
+
+**この Bash 版で未サポート**(上流 upa/deadman にはある機能): ssh リレー、SNMP ping、hping3 による TCP ping、Linux netns / VRF、RouterOS API、ソースインターフェイス指定、同期/非同期切替、矢印点滅。
 
 必要な環境 (macOS)
 ------------------
 
-- Python 3 (macOS 標準の `/usr/bin/python3` で動作)
+- Bash(macOS 標準の `/bin/bash` 3.2 で十分。Homebrew の bash 5 でも可)
 - `ping` (macOS 標準)
-- オプション機能を使う場合のみ:
-  - `ssh` (標準)
-  - `snmpping` (Net-SNMP)
-  - `hping3` (`brew install hping`)
+- `ping6` (macOS 標準) — IPv6 を使う場合のみ
+- `awk`, `tput`, `mktemp`, `hostname` — いずれも macOS 標準
 
 セットアップ
 ------------
@@ -157,23 +146,23 @@ deadman deadman.conf
 ------
 
 ```sh
-deadman [-h] [-s SCALE] [-a] [-b] [-l LOGDIR] configfile
+deadman [-s SCALE] [-a] [-b] [-l LOGDIR] [-h] configfile
 ```
 
 | オプション | 説明 |
 | --- | --- |
-| `-s SCALE`, `--scale SCALE` | RTT バーグラフの1段階の大きさ (ms)。デフォルト `10` |
-| `-a`, `--async-mode` | 非同期モード(全ターゲットに並列 ping) |
-| `-b`, `--blink-arrow` | 非同期モード時にカーソル矢印を点滅 |
-| `-l LOGDIR`, `--logging LOGDIR` | ログファイル出力ディレクトリ |
+| `-s SCALE`, `--scale SCALE` | RTT バーグラフの1段階の ms 数 (デフォルト `10`) |
+| `-a`, `--async-mode` | 上流との CLI 互換用(本実装は常に並列) |
+| `-b`, `--blink-arrow` | 互換用 no-op |
+| `-l LOGDIR`, `--logging LOGDIR` | `LOGDIR/<name>.log` に各 probe を1行追記 |
 | `-h`, `--help` | ヘルプ |
 
-TUI 内は上下カーソルキーでターゲット選択、`q` で終了。
+TUI 内は `q` で終了、`r` でカウンタリセット。
 
 コンフィグ
 ----------
 
-1行1ターゲットの単純なテキスト形式。`deadman.conf` に雛形があります。
+1行1ターゲットの単純なテキスト形式です。`deadman.conf` に雛形があります。
 
 ```
 # コメントは '#' から
@@ -186,24 +175,9 @@ mroot6          2001:dc3::35
 kame6           2001:2f0:0:8800::1:1
 ```
 
-応用(リレー/代替送信):
+上流で有効な追加フィールド(`relay=`, `via=snmp`, `tcp=...` など)は、この Bash 実装では黙って無視されます。最初の2語(名前・アドレス)のみ使用します。
 
-```
-# ssh 踏み台経由 (macOS/Linux)
-google-via-ssh  173.194.117.176 relay=X.X.X.X os=Linux user=USER key=~/.ssh/id_rsa
-
-# SNMPv2 ping (RFC4560)
-gw-via-snmp     8.8.8.8 relay=X.X.X.X via=snmp community=public
-
-# TCP ping (要 hping3)
-wide-tcp80      203.178.136.59 tcp=dstport:80
-
-# Linux 専用
-gw-via-netns    8.8.8.8 relay=netns1 via=netns
-gw-via-vrf      8.8.8.8 relay=vrf1 via=vrf
-```
-
-コンフィグ編集後は `SIGHUP` で既存ターゲットの履歴を保ったままリロードできます:
+コンフィグ編集後は `SIGHUP` で履歴を保ったままリロード:
 
 ```sh
 kill -HUP $(pgrep -f 'deadman deadman.conf')
@@ -212,6 +186,6 @@ kill -HUP $(pgrep -f 'deadman deadman.conf')
 帰属 (Credits)
 --------------
 
-- オリジナル: [upa/deadman](https://github.com/upa/deadman) by upa@haeena.net
+- 設計・コンフィグ形式の上流: [upa/deadman](https://github.com/upa/deadman) by upa@haeena.net
 - さらにその起源: Interop Tokyo ShowNet NOC team が開発した "pingman"
 - ライセンス: MIT ([LICENSE](LICENSE))
